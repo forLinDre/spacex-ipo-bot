@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Set
 
 import config
-from sources import check_all_sources, Article
+from sources import check_all_sources, check_ticker_live, Article
 from notifier import create_notifier, BaseNotifier
 
 # =============================================================================
@@ -92,6 +92,115 @@ class RumorRateLimiter:
 
 
 # =============================================================================
+# TICKER WATCHER - Monitors for when a ticker starts trading
+# =============================================================================
+
+WATCHED_TICKERS_FILE = "watched_tickers.json"
+
+
+class TickerWatcher:
+    """
+    Watches ticker symbols and alerts when they start trading.
+
+    Once a confirmed IPO alert includes a ticker symbol, it gets added to the
+    watch list. The watcher checks every cycle if the ticker is live on an exchange.
+    """
+
+    def __init__(self):
+        self.watched_tickers: dict = {}  # {ticker: {"added": iso_date, "notified": bool}}
+        self._load()
+
+    def _load(self):
+        """Load watched tickers from disk."""
+        path = Path(WATCHED_TICKERS_FILE)
+        if path.exists():
+            try:
+                with open(path, "r") as f:
+                    self.watched_tickers = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Could not load watched tickers: {e}")
+                self.watched_tickers = {}
+
+    def _save(self):
+        """Save watched tickers to disk."""
+        path = Path(WATCHED_TICKERS_FILE)
+        try:
+            with open(path, "w") as f:
+                json.dump(self.watched_tickers, f, indent=2)
+        except IOError as e:
+            logger.error(f"Could not save watched tickers: {e}")
+
+    def add_ticker(self, ticker: str):
+        """Add a ticker to the watch list."""
+        if ticker and ticker not in self.watched_tickers:
+            self.watched_tickers[ticker] = {
+                "added": datetime.utcnow().isoformat(),
+                "notified": False,
+            }
+            self._save()
+            logger.info(f"📊 Added ticker '{ticker}' to watch list")
+
+    def check_all(self, notifier: BaseNotifier) -> None:
+        """
+        Check all watched tickers to see if any are now trading.
+
+        Args:
+            notifier: The notification service to send alerts.
+        """
+        if not self.watched_tickers:
+            return
+
+        tickers_to_check = [
+            t for t, info in self.watched_tickers.items()
+            if not info.get("notified", False)
+        ]
+
+        if not tickers_to_check:
+            return
+
+        logger.info(f"📊 Checking {len(tickers_to_check)} watched ticker(s): {', '.join(tickers_to_check)}")
+
+        for ticker in tickers_to_check:
+            quote = check_ticker_live(ticker)
+            if quote:
+                # TRADING HAS STARTED!
+                price = quote["price"]
+                exchange = quote["exchange"]
+                name = quote["name"]
+                currency = quote["currency"]
+                market_state = quote["market_state"]
+
+                message = (
+                    f"🔔 TRADING HAS STARTED!\n\n"
+                    f"SpaceX ({ticker}) is NOW LIVE!\n"
+                    f"💰 Price: ${price:.2f} {currency}\n"
+                    f"📈 Exchange: {exchange}\n"
+                    f"🏷️ Name: {name}\n"
+                    f"📊 Market State: {market_state}\n"
+                    f"🕐 Detected: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+                    f"GO GO GO! 🚀"
+                )
+
+                logger.info(f"🔔 TRADING STARTED: {ticker} at ${price:.2f} on {exchange}")
+                notifier.send_alert(message, "confirmed")
+
+                # Mark as notified so we don't alert again
+                self.watched_tickers[ticker]["notified"] = True
+                self.watched_tickers[ticker]["trading_started"] = datetime.utcnow().isoformat()
+                self.watched_tickers[ticker]["first_price"] = price
+                self._save()
+            else:
+                logger.info(f"  {ticker}: Not yet trading")
+
+    def has_active_watches(self) -> bool:
+        """Check if there are any tickers being actively watched."""
+        return any(
+            not info.get("notified", False)
+            for info in self.watched_tickers.values()
+        )
+
+
+# =============================================================================
 # MAIN BOT LOGIC
 # =============================================================================
 
@@ -123,6 +232,7 @@ def run_check(
     notifier: BaseNotifier,
     seen_articles: Set[str],
     rumor_limiter: RumorRateLimiter,
+    ticker_watcher: TickerWatcher = None,
 ) -> Set[str]:
     """
     Run one check cycle: fetch sources, deduplicate, notify.
@@ -131,6 +241,7 @@ def run_check(
         notifier: The notification service to use.
         seen_articles: Set of already-seen article URLs.
         rumor_limiter: Rate limiter for rumor notifications.
+        ticker_watcher: Ticker watcher to add newly discovered tickers.
 
     Returns:
         Updated set of seen articles.
@@ -159,6 +270,9 @@ def run_check(
         success = notifier.send_alert(message, "confirmed")
         if success:
             seen_articles.add(article.url)
+            # Add ticker to watch list if found
+            if article.ticker_symbol and ticker_watcher:
+                ticker_watcher.add_ticker(article.ticker_symbol)
 
     # Send rumor alerts with rate limiting
     for article in rumors:
@@ -211,6 +325,11 @@ def main():
     # Rate limiter for rumors
     rumor_limiter = RumorRateLimiter(max_per_hour=config.MAX_RUMOR_SMS_PER_HOUR)
 
+    # Ticker watcher - monitors for when discovered tickers start trading
+    ticker_watcher = TickerWatcher()
+    if ticker_watcher.has_active_watches():
+        logger.info(f"📊 Watching {len([t for t, i in ticker_watcher.watched_tickers.items() if not i.get('notified')])} ticker(s) for trading start")
+
     # Graceful shutdown handler
     running = True
 
@@ -234,14 +353,18 @@ def main():
 
     if args.once or args.test:
         # Single run
-        seen_articles = run_check(notifier, seen_articles, rumor_limiter)
+        seen_articles = run_check(notifier, seen_articles, rumor_limiter, ticker_watcher)
+        # Also check watched tickers
+        ticker_watcher.check_all(notifier)
         logger.info("Single check complete. Exiting.")
         return
 
     # Continuous monitoring loop
     while running:
         try:
-            seen_articles = run_check(notifier, seen_articles, rumor_limiter)
+            seen_articles = run_check(notifier, seen_articles, rumor_limiter, ticker_watcher)
+            # Check if any watched tickers have started trading
+            ticker_watcher.check_all(notifier)
         except Exception as e:
             logger.error(f"Error during check cycle: {e}", exc_info=True)
 

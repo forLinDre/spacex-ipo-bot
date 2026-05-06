@@ -3,6 +3,7 @@ config.py
 
 # Runtime files
 seen_articles.json
+watched_tickers.json
 spacex_ipo_bot.log
 
 # Python

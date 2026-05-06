@@ -323,6 +323,56 @@ def check_reddit() -> List[Article]:
     return articles
 
 
+def check_ticker_live(ticker: str) -> Optional[dict]:
+    """
+    Check if a ticker symbol is actively trading using Yahoo Finance.
+
+    Args:
+        ticker: The ticker symbol to check (e.g., "SPCE").
+
+    Returns:
+        A dict with price info if trading, or None if not yet live.
+        Example: {"price": 142.50, "exchange": "NASDAQ", "name": "SpaceX"}
+    """
+    try:
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+            f"?interval=1m&range=1d"
+        )
+        response = requests.get(url, headers=HEADERS, timeout=10)
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        result = data.get("chart", {}).get("result")
+
+        if not result:
+            return None
+
+        meta = result[0].get("meta", {})
+        price = meta.get("regularMarketPrice", 0)
+        exchange = meta.get("exchangeName", "Unknown")
+        name = meta.get("shortName", ticker)
+        market_state = meta.get("marketState", "")
+
+        # Price must be > 0 and market state should indicate it's active
+        if price and price > 0:
+            return {
+                "price": price,
+                "exchange": exchange,
+                "name": name,
+                "market_state": market_state,
+                "currency": meta.get("currency", "USD"),
+            }
+
+        return None
+
+    except Exception as e:
+        logger.debug(f"Ticker check for {ticker} failed: {e}")
+        return None
+
+
 def check_all_sources() -> List[Article]:
     """
     Check all sources for SpaceX IPO news.
