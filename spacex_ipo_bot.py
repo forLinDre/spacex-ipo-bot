@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""
+SpaceX IPO Notification Bot
+
+Monitors online sources every 5 minutes for news about SpaceX going public.
+Sends SMS alerts via Twilio for both confirmed IPO events and rumored dates.
+
+Usage:
+    python spacex_ipo_bot.py          # Run with Twilio (default)
+    python spacex_ipo_bot.py --test   # Run once with console output (no SMS)
+"""
+
+import json
+import time
+import logging
+import argparse
+import signal
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Set
+
+import config
+from sources import check_all_sources, Article
+from notifier import create_notifier, BaseNotifier
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler(config.LOG_FILE),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger("spacex_ipo_bot")
+
+# =============================================================================
+# DEDUPLICATION
+# =============================================================================
+
+
+def load_seen_articles() -> Set[str]:
+    """Load previously seen article URLs from disk."""
+    path = Path(config.SEEN_ARTICLES_FILE)
+    if path.exists():
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+                return set(data.get("urls", []))
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load seen articles file: {e}")
+    return set()
+
+
+def save_seen_articles(seen: Set[str]) -> None:
+    """Save seen article URLs to disk."""
+    path = Path(config.SEEN_ARTICLES_FILE)
+    try:
+        with open(path, "w") as f:
+            json.dump({"urls": list(seen), "last_updated": datetime.utcnow().isoformat()}, f, indent=2)
+    except IOError as e:
+        logger.error(f"Could not save seen articles file: {e}")
+
+
+# =============================================================================
+# RATE LIMITING FOR RUMORS
+# =============================================================================
+
+
+class RumorRateLimiter:
+    """Limits how many rumor SMS are sent per hour."""
+
+    def __init__(self, max_per_hour: int):
+        self.max_per_hour = max_per_hour
+        self.sent_timestamps: list = []
+
+    def can_send(self) -> bool:
+        """Check if we can send another rumor SMS."""
+        now = datetime.utcnow()
+        one_hour_ago = now - timedelta(hours=1)
+        # Remove timestamps older than 1 hour
+        self.sent_timestamps = [ts for ts in self.sent_timestamps if ts > one_hour_ago]
+        return len(self.sent_timestamps) < self.max_per_hour
+
+    def record_sent(self) -> None:
+        """Record that a rumor SMS was sent."""
+        self.sent_timestamps.append(datetime.utcnow())
+
+
+# =============================================================================
+# MAIN BOT LOGIC
+# =============================================================================
+
+
+def format_message(article: Article) -> str:
+    """Format an article into an SMS message body."""
+    parts = []
+
+    if article.alert_level == "confirmed":
+        parts.append("SpaceX is going public!")
+    else:
+        parts.append("SpaceX IPO news detected.")
+
+    parts.append(f"\n📝 {article.title}")
+
+    if article.ticker_symbol:
+        parts.append(f"\n💹 Ticker: {article.ticker_symbol}")
+
+    if article.rumored_date:
+        parts.append(f"\n📅 Rumored timeframe: {article.rumored_date}")
+
+    parts.append(f"\n📰 Source: {article.source}")
+    parts.append(f"\n🔗 {article.url}")
+
+    return "".join(parts)
+
+
+def run_check(
+    notifier: BaseNotifier,
+    seen_articles: Set[str],
+    rumor_limiter: RumorRateLimiter,
+) -> Set[str]:
+    """
+    Run one check cycle: fetch sources, deduplicate, notify.
+
+    Args:
+        notifier: The notification service to use.
+        seen_articles: Set of already-seen article URLs.
+        rumor_limiter: Rate limiter for rumor notifications.
+
+    Returns:
+        Updated set of seen articles.
+    """
+    logger.info("=" * 50)
+    logger.info("Starting check cycle...")
+
+    articles = check_all_sources()
+
+    new_articles = [a for a in articles if a.url not in seen_articles]
+
+    if not new_articles:
+        logger.info("No new articles found.")
+        return seen_articles
+
+    logger.info(f"Found {len(new_articles)} new article(s).")
+
+    # Prioritize confirmed over rumors
+    confirmed = [a for a in new_articles if a.alert_level == "confirmed"]
+    rumors = [a for a in new_articles if a.alert_level == "rumor"]
+
+    # Send confirmed alerts immediately (no rate limiting)
+    for article in confirmed:
+        message = format_message(article)
+        logger.info(f"CONFIRMED ALERT: {article.title}")
+        success = notifier.send_alert(message, "confirmed")
+        if success:
+            seen_articles.add(article.url)
+
+    # Send rumor alerts with rate limiting
+    for article in rumors:
+        if not rumor_limiter.can_send():
+            logger.info("Rumor rate limit reached. Skipping remaining rumors this cycle.")
+            break
+
+        message = format_message(article)
+        logger.info(f"RUMOR ALERT: {article.title}")
+        if article.rumored_date:
+            logger.info(f"  Rumored date: {article.rumored_date}")
+        success = notifier.send_alert(message, "rumor")
+        if success:
+            seen_articles.add(article.url)
+            rumor_limiter.record_sent()
+
+    # Save updated seen articles
+    save_seen_articles(seen_articles)
+
+    return seen_articles
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(description="SpaceX IPO Notification Bot")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run once with console output (no SMS sent)",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single check cycle and exit",
+    )
+    args = parser.parse_args()
+
+    # Override to console notifier for testing
+    if args.test:
+        config.NOTIFIER = "console"
+
+    # Create notifier
+    notifier = create_notifier(config)
+    logger.info(f"Using notifier: {config.NOTIFIER}")
+
+    # Load seen articles
+    seen_articles = load_seen_articles()
+    logger.info(f"Loaded {len(seen_articles)} previously seen articles.")
+
+    # Rate limiter for rumors
+    rumor_limiter = RumorRateLimiter(max_per_hour=config.MAX_RUMOR_SMS_PER_HOUR)
+
+    # Graceful shutdown handler
+    running = True
+
+    def signal_handler(sig, frame):
+        nonlocal running
+        logger.info("\nShutdown signal received. Saving state and exiting...")
+        save_seen_articles(seen_articles)
+        running = False
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Banner
+    logger.info("=" * 60)
+    logger.info("  🚀 SpaceX IPO Notification Bot Started")
+    logger.info(f"  Check interval: {config.CHECK_INTERVAL_SECONDS}s ({config.CHECK_INTERVAL_SECONDS // 60} min)")
+    logger.info(f"  Max rumor SMS/hour: {config.MAX_RUMOR_SMS_PER_HOUR}")
+    logger.info(f"  Notifier: {config.NOTIFIER}")
+    logger.info("=" * 60)
+
+    if args.once or args.test:
+        # Single run
+        seen_articles = run_check(notifier, seen_articles, rumor_limiter)
+        logger.info("Single check complete. Exiting.")
+        return
+
+    # Continuous monitoring loop
+    while running:
+        try:
+            seen_articles = run_check(notifier, seen_articles, rumor_limiter)
+        except Exception as e:
+            logger.error(f"Error during check cycle: {e}", exc_info=True)
+
+        logger.info(f"Next check in {config.CHECK_INTERVAL_SECONDS // 60} minutes...")
+        time.sleep(config.CHECK_INTERVAL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

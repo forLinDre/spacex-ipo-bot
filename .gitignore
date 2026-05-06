@@ -1,0 +1,29 @@
+# Credentials - NEVER push real config with secrets
+config.py
+
+# Runtime files
+seen_articles.json
+spacex_ipo_bot.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
