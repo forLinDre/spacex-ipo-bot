@@ -32,11 +32,11 @@ class BaseNotifier(ABC):
 class TwilioNotifier(BaseNotifier):
     """Twilio SMS notification implementation."""
 
-    def __init__(self, account_sid: str, auth_token: str, from_number: str, to_number: str):
+    def __init__(self, account_sid: str, auth_token: str, from_number: str, to_numbers: list):
         self.account_sid = account_sid
         self.auth_token = auth_token
         self.from_number = from_number
-        self.to_number = to_number
+        self.to_numbers = to_numbers if isinstance(to_numbers, list) else [to_numbers]
         self._client = None
 
     @property
@@ -48,7 +48,7 @@ class TwilioNotifier(BaseNotifier):
         return self._client
 
     def send_alert(self, message: str, alert_level: str) -> bool:
-        """Send an SMS via Twilio."""
+        """Send an SMS via Twilio to all configured phone numbers."""
         try:
             # Prefix message with alert level indicator
             if alert_level == "confirmed":
@@ -62,13 +62,20 @@ class TwilioNotifier(BaseNotifier):
             if len(full_message) > 1600:
                 full_message = full_message[:1597] + "..."
 
-            msg = self.client.messages.create(
-                body=full_message,
-                from_=self.from_number,
-                to=self.to_number,
-            )
-            logger.info(f"SMS sent successfully. SID: {msg.sid}")
-            return True
+            all_sent = True
+            for to_number in self.to_numbers:
+                try:
+                    msg = self.client.messages.create(
+                        body=full_message,
+                        from_=self.from_number,
+                        to=to_number,
+                    )
+                    logger.info(f"SMS sent to {to_number}. SID: {msg.sid}")
+                except Exception as e:
+                    logger.error(f"Failed to send SMS to {to_number}: {e}")
+                    all_sent = False
+
+            return all_sent
 
         except Exception as e:
             logger.error(f"Failed to send SMS via Twilio: {e}")
@@ -111,11 +118,17 @@ def create_notifier(config) -> BaseNotifier:
     notifier_type = getattr(config, "NOTIFIER", "twilio").lower()
 
     if notifier_type == "twilio":
+        # Support both old (YOUR_PHONE_NUMBER string) and new (PHONE_NUMBERS list) config
+        to_numbers = getattr(config, "PHONE_NUMBERS", None)
+        if to_numbers is None:
+            # Fallback to old single-number config
+            to_numbers = [getattr(config, "YOUR_PHONE_NUMBER", "")]
+
         return TwilioNotifier(
             account_sid=config.TWILIO_ACCOUNT_SID,
             auth_token=config.TWILIO_AUTH_TOKEN,
             from_number=config.TWILIO_FROM_NUMBER,
-            to_number=config.YOUR_PHONE_NUMBER,
+            to_numbers=to_numbers,
         )
     elif notifier_type == "console":
         return ConsoleNotifier()

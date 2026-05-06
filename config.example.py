@@ -14,8 +14,12 @@ SETUP:
 # Which notifier to use: "twilio" (add more options as you implement them)
 NOTIFIER = "twilio"
 
-# Your phone number to receive SMS alerts (with country code)
-YOUR_PHONE_NUMBER = "+1XXXXXXXXXX"  # e.g., "+14155551234"
+# Phone numbers to receive SMS alerts (with country code)
+# Add as many numbers as you want to this list
+PHONE_NUMBERS = [
+    "+1XXXXXXXXXX",  # e.g., "+14155551234"
+    # "+1YYYYYYYYYY",  # Add more numbers here
+]
 
 # =============================================================================
 # TWILIO SETTINGS
