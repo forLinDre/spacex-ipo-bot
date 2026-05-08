@@ -1,6 +1,6 @@
 # 🚀 SpaceX IPO Notification Bot
 
-A Python bot that monitors online sources every 5 minutes for news about SpaceX going public (IPO) and sends you SMS alerts via Twilio.
+A Python bot that monitors online sources every 5 minutes for news about SpaceX going public (IPO) and sends you alerts via WhatsApp (CallMeBot), Twilio SMS, or other notification providers.
 
 ## Features
 
@@ -23,12 +23,38 @@ cd spacex_bot
 pip install -r requirements.txt
 ```
 
-### 2. Configure credentials
+### 2. Configure notifications
 
-Edit `config.py` and fill in:
+Copy the example config and edit it:
+
+```bash
+cp config.example.py config.py
+```
+
+#### Option A: CallMeBot WhatsApp (Free — recommended)
+
+1. Each recipient sends this WhatsApp message to **+34 644 21 77 47**:
+   ```
+   I allow callmebot to send me messages
+   ```
+2. You'll receive an API key in the reply
+3. Edit `config.py`:
 
 ```python
-YOUR_PHONE_NUMBER = "+14155551234"      # Your phone number (with country code)
+NOTIFIER = "callmebot"
+
+CALLMEBOT_RECIPIENTS = [
+    {"phone": "+14155551234", "apikey": "123456"},
+    # Add more recipients here
+]
+```
+
+#### Option B: Twilio SMS (Paid)
+
+```python
+NOTIFIER = "twilio"
+
+PHONE_NUMBERS = ["+14155551234"]
 TWILIO_ACCOUNT_SID = "ACxxxxxxxx..."    # From twilio.com/console
 TWILIO_AUTH_TOKEN = "your_auth_token"   # From twilio.com/console
 TWILIO_FROM_NUMBER = "+15551234567"     # Your Twilio phone number

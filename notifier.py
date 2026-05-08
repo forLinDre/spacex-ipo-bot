@@ -82,6 +82,66 @@ class TwilioNotifier(BaseNotifier):
             return False
 
 
+class CallMeBotNotifier(BaseNotifier):
+    """CallMeBot WhatsApp notification implementation (free, no library needed)."""
+
+    CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
+
+    def __init__(self, recipients: list):
+        """
+        Args:
+            recipients: List of dicts with 'phone' and 'apikey' keys.
+                        Example: [{"phone": "+14155551234", "apikey": "123456"}]
+        """
+        self.recipients = recipients
+
+    def send_alert(self, message: str, alert_level: str) -> bool:
+        """Send a WhatsApp message via CallMeBot to all configured recipients."""
+        import requests
+        import urllib.parse
+        import time
+
+        try:
+            if alert_level == "confirmed":
+                prefix = "🚀 CONFIRMED IPO ALERT"
+            else:
+                prefix = "📰 IPO RUMOR"
+
+            full_message = f"{prefix}\n\n{message}"
+
+            all_sent = True
+            for recipient in self.recipients:
+                try:
+                    params = {
+                        "phone": recipient["phone"],
+                        "text": full_message,
+                        "apikey": recipient["apikey"],
+                    }
+                    response = requests.get(self.CALLMEBOT_URL, params=params, timeout=30)
+
+                    if response.status_code == 200:
+                        logger.info(f"WhatsApp message sent to {recipient['phone']}")
+                    else:
+                        logger.error(
+                            f"CallMeBot returned status {response.status_code} "
+                            f"for {recipient['phone']}: {response.text}"
+                        )
+                        all_sent = False
+
+                    # CallMeBot rate limit: wait between messages
+                    time.sleep(2)
+
+                except Exception as e:
+                    logger.error(f"Failed to send WhatsApp to {recipient['phone']}: {e}")
+                    all_sent = False
+
+            return all_sent
+
+        except Exception as e:
+            logger.error(f"Failed to send WhatsApp via CallMeBot: {e}")
+            return False
+
+
 class ConsoleNotifier(BaseNotifier):
     """Console/stdout notification (useful for testing)."""
 
@@ -130,10 +190,18 @@ def create_notifier(config) -> BaseNotifier:
             from_number=config.TWILIO_FROM_NUMBER,
             to_numbers=to_numbers,
         )
+    elif notifier_type == "callmebot":
+        recipients = getattr(config, "CALLMEBOT_RECIPIENTS", [])
+        if not recipients:
+            raise ValueError(
+                "CALLMEBOT_RECIPIENTS must be set in config.py. "
+                "Example: [{'phone': '+14155551234', 'apikey': '123456'}]"
+            )
+        return CallMeBotNotifier(recipients=recipients)
     elif notifier_type == "console":
         return ConsoleNotifier()
     else:
         raise ValueError(
             f"Unknown notifier type: '{notifier_type}'. "
-            f"Available options: 'twilio', 'console'"
+            f"Available options: 'twilio', 'callmebot', 'console'"
         )

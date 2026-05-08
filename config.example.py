@@ -11,8 +11,8 @@ SETUP:
 # NOTIFICATION SETTINGS
 # =============================================================================
 
-# Which notifier to use: "twilio" (add more options as you implement them)
-NOTIFIER = "twilio"
+# Which notifier to use: "twilio", "callmebot", or "console"
+NOTIFIER = "callmebot"
 
 # Phone numbers to receive SMS alerts (with country code)
 # Add as many numbers as you want to this list
@@ -22,7 +22,19 @@ PHONE_NUMBERS = [
 ]
 
 # =============================================================================
-# TWILIO SETTINGS
+# CALLMEBOT SETTINGS (Free WhatsApp notifications)
+# =============================================================================
+# Each recipient must register first by sending this WhatsApp message:
+#   "I allow callmebot to send me messages"  →  to +34 644 21 77 47
+# They will receive an API key. Add each person's phone + apikey below.
+
+CALLMEBOT_RECIPIENTS = [
+    {"phone": "+1XXXXXXXXXX", "apikey": "your_api_key_here"},
+    # {"phone": "+1YYYYYYYYYY", "apikey": "another_api_key"},  # Add more recipients
+]
+
+# =============================================================================
+# TWILIO SETTINGS (alternative to CallMeBot — set NOTIFIER = "twilio" to use)
 # =============================================================================
 
 TWILIO_ACCOUNT_SID = "your_account_sid_here"
