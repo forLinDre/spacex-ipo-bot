@@ -4,6 +4,8 @@ SpaceX IPO Notification Bot
 
 Monitors online sources every 5 minutes for news about SpaceX going public.
 Sends SMS alerts via Twilio for both confirmed IPO events and rumored dates.
+Also checks watched tickers 10 seconds after each weekday's NYSE/NASDAQ
+opening bell (9:30:10 AM ET) to catch the moment trading begins.
 
 Usage:
     python spacex_ipo_bot.py          # Run with Twilio (default)
@@ -19,6 +21,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Set
+from zoneinfo import ZoneInfo
 
 import config
 from sources import check_all_sources, check_ticker_live, Article
@@ -201,6 +204,61 @@ class TickerWatcher:
 
 
 # =============================================================================
+# OPENING BELL SCHEDULER
+# =============================================================================
+
+ET = ZoneInfo("America/New_York")
+
+# Opening bell time: 9:30:10 AM ET (10 seconds after NYSE/NASDAQ open)
+OPENING_BELL_HOUR = 9
+OPENING_BELL_MINUTE = 30
+OPENING_BELL_SECOND = 10
+
+
+def seconds_until_opening_bell() -> float:
+    """
+    Calculate seconds until the next weekday opening bell (9:30:10 AM ET).
+
+    Returns:
+        Seconds until the next opening bell, or float('inf') if the feature
+        is disabled via config.
+    """
+    if not getattr(config, "OPENING_BELL_CHECK", True):
+        return float("inf")
+
+    now_et = datetime.now(ET)
+
+    # Build today's bell time
+    bell_today = now_et.replace(
+        hour=OPENING_BELL_HOUR,
+        minute=OPENING_BELL_MINUTE,
+        second=OPENING_BELL_SECOND,
+        microsecond=0,
+    )
+
+    # If today is a weekday and the bell hasn't passed yet, use today
+    if now_et.weekday() < 5 and now_et < bell_today:
+        delta = (bell_today - now_et).total_seconds()
+        return delta
+
+    # Otherwise, find the next weekday
+    days_ahead = 1
+    next_day = now_et + timedelta(days=days_ahead)
+    while next_day.weekday() >= 5:  # Skip Saturday (5) and Sunday (6)
+        days_ahead += 1
+        next_day = now_et + timedelta(days=days_ahead)
+
+    bell_next = next_day.replace(
+        hour=OPENING_BELL_HOUR,
+        minute=OPENING_BELL_MINUTE,
+        second=OPENING_BELL_SECOND,
+        microsecond=0,
+    )
+    delta = (bell_next - now_et).total_seconds()
+    return delta
+
+
+# =============================================================================
 # MAIN BOT LOGIC
 # =============================================================================
 
@@ -368,8 +426,37 @@ def main():
         except Exception as e:
             logger.error(f"Error during check cycle: {e}", exc_info=True)
 
-        logger.info(f"Next check in {config.CHECK_INTERVAL_SECONDS // 60} minutes...")
-        time.sleep(config.CHECK_INTERVAL_SECONDS)
+        # Smart sleep: wake at whichever comes first — regular interval or opening bell
+        bell_seconds = seconds_until_opening_bell()
+        interval_seconds = float(config.CHECK_INTERVAL_SECONDS)
+        sleep_seconds = min(interval_seconds, bell_seconds)
+
+        is_bell_wake = bell_seconds <= interval_seconds
+
+        if is_bell_wake and bell_seconds < float("inf"):
+            bell_time_et = datetime.now(ET) + timedelta(seconds=bell_seconds)
+            logger.info(
+                f"🔔 Next wake: opening bell at {bell_time_et.strftime('%H:%M:%S ET')} "
+                f"(in {int(bell_seconds)}s)"
+            )
+        else:
+            logger.info(f"Next check in {config.CHECK_INTERVAL_SECONDS // 60} minutes...")
+
+        time.sleep(sleep_seconds)
+
+        # If we woke for the opening bell, only do a ticker check (not full source scan)
+        if is_bell_wake and bell_seconds < float("inf") and sleep_seconds < interval_seconds:
+            try:
+                logger.info("🔔 Opening bell ticker check!")
+                ticker_watcher.check_all(notifier)
+            except Exception as e:
+                logger.error(f"Error during opening bell ticker check: {e}", exc_info=True)
+
+            # Sleep remaining time until the next regular interval
+            remaining = interval_seconds - sleep_seconds
+            if remaining > 0:
+                logger.info(f"Next full check in {int(remaining)}s...")
+                time.sleep(remaining)
 
 
 if __name__ == "__main__":

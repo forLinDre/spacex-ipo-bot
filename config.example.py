@@ -51,6 +51,10 @@ CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 # Maximum rumor SMS per hour (to avoid spam)
 MAX_RUMOR_SMS_PER_HOUR = 3
 
+# Opening bell check: also check watched tickers 10 seconds after market open
+# (9:30:10 AM ET, Monday-Friday). Set to False to disable.
+OPENING_BELL_CHECK = True
+
 # Log file path
 LOG_FILE = "spacex_ipo_bot.log"
 
